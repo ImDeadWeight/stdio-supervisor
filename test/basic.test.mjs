@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createStdioSupervisor } from '../src/index.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const ECHO_SERVER = path.join(__dirname, 'fixtures', 'echo-server.mjs')
+const ECHO_SERVER = path.join(__dirname, '..', 'test-fixtures', 'echo-server.mjs')
 
 function spawnEcho(extraEnv = {}) {
   return {

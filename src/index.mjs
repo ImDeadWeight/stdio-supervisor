@@ -5,8 +5,10 @@
 // =============================================================================
 // Spawns long-lived child processes that talk newline-delimited text over
 // stdio, frames stdout into whole lines, restarts a crashed process with
-// capped exponential backoff, and force-kills it (including any shell
-// grandchild on Windows) on stop/shutdown.
+// capped exponential backoff, and force-kills it — including any child a
+// wrapper process (npx, a shell) forked on its own, on Windows via
+// `taskkill /T` and on POSIX via signaling the whole process group — on
+// stop/shutdown.
 //
 // No protocol opinion — callers own how lines/exits are delivered (an RPC
 // client, a log relay, a test harness, whatever) via the onLine/onExit
@@ -138,6 +140,15 @@ export function createStdioSupervisor({ logDir, onSpawn, onLine, onExit, shouldR
         : spawn(cfg.command, args, {
             env: childEnv,
             windowsHide: true,
+            // POSIX only: make this child the leader of its own process
+            // group (child.pid becomes the pgid too), so killChild() can
+            // signal the whole group instead of just this one process. A
+            // wrapper like npx forks the real server as its own child —
+            // signaling only the wrapper's PID kills the wrapper and
+            // orphans the server underneath it. Left off on win32: process
+            // groups work differently there, and taskkill /T is used
+            // instead (see killChild).
+            detached: process.platform !== 'win32',
             stdio: ['pipe', 'pipe', 'pipe'],
           })
     } catch (err) {
@@ -263,8 +274,14 @@ export function createStdioSupervisor({ logDir, onSpawn, onLine, onExit, shouldR
       // would orphan it. taskkill /T takes down the whole tree.
       try { execFile('taskkill', ['/pid', String(child.pid), '/T', '/F']) } catch { /* already gone */ }
     } else {
-      child.kill('SIGTERM')
-      const force = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* already gone */ } }, KILL_GRACE_MS)
+      // Spawned with detached:true, so child.pid doubles as its process
+      // group id — signaling -pid hits the whole group (the direct child
+      // plus anything it forked), not just the direct child. A plain
+      // child.kill() here would repeat the npx-wrapper orphan bug on POSIX.
+      try { process.kill(-child.pid, 'SIGTERM') } catch { /* already gone */ }
+      const force = setTimeout(() => {
+        try { process.kill(-child.pid, 'SIGKILL') } catch { /* already gone */ }
+      }, KILL_GRACE_MS)
       force.unref?.()
     }
   }

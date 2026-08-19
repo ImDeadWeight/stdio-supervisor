@@ -18,7 +18,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createStdioSupervisor } from '../src/index.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const HEARTBEAT = path.join(__dirname, 'fixtures', 'heartbeat.mjs')
+const HEARTBEAT = path.join(__dirname, '..', 'test-fixtures', 'heartbeat.mjs')
 
 test(
   'stop() kills the real grandchild process, not just the cmd.exe shell wrapper',
