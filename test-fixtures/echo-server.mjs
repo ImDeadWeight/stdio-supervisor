@@ -3,6 +3,7 @@
 //   ECHO_CRASH_AFTER_MS=<n>   exit(1) after n ms
 //   ECHO_EXIT_CODE=<n>        exit code to use for ECHO_CRASH_AFTER_MS (default 1)
 //   ECHO_PREFIX=<s>           prefix for echoed lines (default "echo:")
+//   ECHO_CHATTER_MS=<n>       also emit "<prefix>tick" every n ms, unprompted
 process.stdin.setEncoding('utf8')
 
 const prefix = process.env.ECHO_PREFIX ?? 'echo:'
@@ -12,6 +13,11 @@ process.stdin.on('data', (chunk) => {
     if (line.trim()) process.stdout.write(`${prefix}${line.trim()}\n`)
   }
 })
+
+const chatterMs = Number(process.env.ECHO_CHATTER_MS)
+if (Number.isFinite(chatterMs)) {
+  setInterval(() => process.stdout.write(`${prefix}tick\n`), chatterMs)
+}
 
 const crashAfter = Number(process.env.ECHO_CRASH_AFTER_MS)
 if (Number.isFinite(crashAfter)) {
