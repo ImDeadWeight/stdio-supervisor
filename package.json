@@ -1,6 +1,6 @@
 {
   "name": "stdio-supervisor",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A small supervisor for long-lived child processes communicating over stdio: restart with capped backoff, cross-platform (incl. Windows process-tree) termination, and line-framed output.",
   "type": "module",
   "main": "src/index.mjs",
