@@ -1,7 +1,7 @@
 // Verifies the actual claim behind killChild()'s Windows branch: that
-// stop()/shutdown() kill the *real* grandchild process when the child was
-// spawned through cmd.exe (shell:true — the default on win32, required for
-// npx/npm .cmd shims), not just the cmd.exe wrapper.
+// stop()/shutdown() kill the *real* grandchild process when the child is a
+// .cmd shim (exactly the npx/npm case) that cross-spawn routes through
+// cmd.exe, not just the cmd.exe wrapper.
 //
 // child.kill() alone only signals the direct child (cmd.exe); the real
 // worker underneath survives as an orphan. This test proves taskkill /T
@@ -18,7 +18,10 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createStdioSupervisor } from '../src/index.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const HEARTBEAT = path.join(__dirname, '..', 'test-fixtures', 'heartbeat.mjs')
+// A .cmd file (not .exe) — cross-spawn only routes through cmd.exe for
+// extensions it doesn't recognize as directly executable, which is exactly
+// what makes npx.cmd/npm.cmd need this path in the first place.
+const HEARTBEAT_CMD = path.join(__dirname, '..', 'test-fixtures', 'heartbeat.cmd')
 
 test(
   'stop() kills the real grandchild process, not just the cmd.exe shell wrapper',
@@ -29,9 +32,7 @@ test(
 
     const supervisor = createStdioSupervisor()
     try {
-      // No shell:false here — this is the default win32 path (spawn via
-      // cmd.exe), same as any npx/npm-shimmed MCP server.
-      const res = supervisor.start('hb', { command: process.execPath, args: [HEARTBEAT, outFile] })
+      const res = supervisor.start('hb', { command: HEARTBEAT_CMD, args: [outFile] })
       assert.equal(res.ok, true)
 
       // Wait for the grandchild to actually be alive and writing.

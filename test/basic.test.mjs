@@ -2,11 +2,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import os from 'node:os'
+import fs from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createStdioSupervisor } from '../src/index.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ECHO_SERVER = path.join(__dirname, '..', 'test-fixtures', 'echo-server.mjs')
+const PRINT_CWD = path.join(__dirname, '..', 'test-fixtures', 'print-cwd.mjs')
 
 function spawnEcho(extraEnv = {}) {
   return {
@@ -281,5 +284,28 @@ test('a later send() timeout replaces an earlier pending one, not stacks', async
     assert.deepEqual(timeouts, [['second', 'silent', { timeoutMs: 400 }]])
   } finally {
     supervisor.shutdown()
+  }
+})
+
+test('cwd is passed through to the spawned process', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stdio-supervisor-cwd-'))
+  // Symlinks/junctions (common on macOS's /tmp -> /private/tmp, and possible
+  // on Windows) mean the path a child reports via process.cwd() can differ
+  // in spelling from the path we asked for even though it's the same
+  // directory — realpath both sides before comparing.
+  const expected = fs.realpathSync(dir)
+
+  const lines = []
+  const supervisor = createStdioSupervisor({ onLine: (id, line) => lines.push(line) })
+  try {
+    const res = supervisor.start('a', { command: process.execPath, args: [PRINT_CWD], cwd: dir, shell: false })
+    assert.equal(res.ok, true)
+    await delay(200)
+
+    assert.equal(lines.length, 1)
+    assert.equal(fs.realpathSync(lines[0]), expected)
+  } finally {
+    supervisor.shutdown()
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })

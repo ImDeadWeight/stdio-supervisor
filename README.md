@@ -1,8 +1,8 @@
 # stdio-supervisor
 
-A small, dependency-free supervisor for long-lived child processes that
-communicate over stdio. It handles the fiddly, easy-to-get-wrong parts of
-spawning and babysitting a process from Node:
+A small supervisor for long-lived child processes that communicate over
+stdio. It handles the fiddly, easy-to-get-wrong parts of spawning and
+babysitting a process from Node:
 
 - Restart on crash with capped exponential backoff (and a stability window
   that resets the backoff once a process has stayed up a while)
@@ -11,8 +11,13 @@ spawning and babysitting a process from Node:
   (`detached` + `kill(-pid)`) on POSIX. A plain `child.kill()` only signals
   the direct PID; a wrapper like `npx` that forks the real server as its own
   child would leave that real server orphaned on either platform
-- Windows `.cmd` shim handling for `npx`/`npm`-style commands, with correct
-  argv quoting
+- Windows `.cmd` shim handling for `npx`/`npm`-style commands via
+  [`cross-spawn`](https://www.npmjs.com/package/cross-spawn) — the one
+  runtime dependency this library takes, deliberately: getting cmd.exe
+  quoting right (including the parts that stay dangerous even inside quotes,
+  like `%VAR%` expansion) is a problem cross-spawn has had a decade of bug
+  reports to shake out, and re-deriving that by hand is exactly the kind of
+  thing worth not doing twice
 - Line-framed stdout — partial chunks are buffered until a full line is
   available
 - An optional minimal-environment mode for spawning children that shouldn't
@@ -102,8 +107,9 @@ Returns a supervisor with:
 | `command` | `string` | required |
 | `args` | `string[]` | default `[]` |
 | `env` | `Record<string, string>` | merged over the base environment |
+| `cwd` | `string` | working directory for the child. Defaults to this process's cwd. |
 | `inheritEnv` | `boolean` | default `true`. Set `false` to spawn with a minimal baseline environment (PATH and the handful of variables a shell needs to function) plus `env`, instead of the parent's full environment. |
-| `shell` | `boolean` | default: shell on Windows (needed for `.cmd` shims like `npx`/`npm`), direct spawn elsewhere. Set `false` to force a direct spawn on Windows too, for real executables. |
+| `shell` | `boolean` | Passed straight through to the underlying spawn call. Leave unset (recommended) — cross-spawn decides per-command whether cmd.exe is actually needed on Windows (e.g. for `.cmd` shims) and owns the escaping when it is. Set `true` only to force full shell interpretation; this bypasses cross-spawn's escaping and is rarely what you want, especially for anything but fully-trusted input. |
 
 ## What this is not
 

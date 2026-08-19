@@ -1,7 +1,7 @@
 {
   "name": "stdio-supervisor",
-  "version": "0.3.0",
-  "description": "A small, dependency-free supervisor for long-lived child processes communicating over stdio: restart with capped backoff, cross-platform (incl. Windows process-tree) termination, and line-framed output.",
+  "version": "0.4.0",
+  "description": "A small supervisor for long-lived child processes communicating over stdio: restart with capped backoff, cross-platform (incl. Windows process-tree) termination, and line-framed output.",
   "type": "module",
   "main": "src/index.mjs",
   "exports": {
@@ -37,5 +37,8 @@
   "homepage": "https://github.com/ImDeadWeight/stdio-supervisor#readme",
   "bugs": {
     "url": "https://github.com/ImDeadWeight/stdio-supervisor/issues"
+  },
+  "dependencies": {
+    "cross-spawn": "^7.0.6"
   }
 }

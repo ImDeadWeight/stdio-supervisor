@@ -16,7 +16,8 @@
 // shouldRestart.
 // =============================================================================
 
-import { spawn, execFile } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import crossSpawn from 'cross-spawn'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -28,33 +29,33 @@ const RESTART_STABLE_MS = 30_000
 // How long a process gets to exit after a polite kill before it is force-killed.
 const KILL_GRACE_MS = 3_000
 
-// Windows quirk: `npx`/`npm` are .cmd shims, and Node's spawn() only runs
-// real executables unless shell:true. On Windows we build one quoted command
-// line ourselves and hand it to cmd.exe (passing an args array alongside
-// shell:true is deprecated — DEP0190 — because Node concatenates without
-// quoting); elsewhere spawn the command directly with the args array.
-// Standard Windows argv quoting: backslash runs immediately before a quote
-// (or the closing quote we add) must be doubled, then quotes escaped —
-// otherwise an arg ending in `\` (any folder path) escapes its own closing
-// quote and mangles the rest of the command line.
-function quoteWindowsArg(a) {
-  return /[\s"&|<>^%]/.test(a) || a === ''
-    ? '"' + a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"'
-    : a
-}
+// Windows quirk: `npx`/`npm` are .cmd shims, and a bare Node spawn() only
+// runs real executables unless shell:true. We used to hand-build one quoted
+// command line and shell:true it through cmd.exe ourselves. That's a corner
+// most people (including an earlier version of this file) get subtly wrong:
+// quoting an argument stops cmd.exe from splitting on it, but doesn't stop
+// cmd.exe's *own* %VAR% expansion from firing even inside the quotes — a
+// caret-escape pass over the metacharacters, not just quoting, is needed
+// too. cross-spawn has absorbed years of bug reports on exactly this
+// (it's what Node's own security advisory for CVE-2024-27980 points people
+// at), so this delegates the whole "does this command need cmd.exe, and how
+// do I escape it if so" decision to it instead of re-deriving it here.
 
 /**
  * @typedef {object} ProcessConfig
  * @property {string} command
  * @property {string[]} [args]
  * @property {Record<string, string>} [env]
+ * @property {string} [cwd] Working directory for the child. Defaults to this process's cwd.
  * @property {boolean} [inheritEnv] Set false to spawn with a minimal baseline
  *   environment plus `env`, instead of the parent's full environment. Useful
  *   for untrusted or third-party children that must not receive the parent
  *   process's own environment (secrets, tokens, etc). Default: true (inherit).
- * @property {boolean} [shell] Set false to spawn the command directly even on
- *   Windows — for real executables (node.exe, *.exe). Default: shell on win32,
- *   which is required for .cmd shims like npx/npm.
+ * @property {boolean} [shell] Passed through to the underlying spawn call. Leave unset
+ *   (recommended) to let cross-spawn decide per-command whether cmd.exe is needed on
+ *   Windows (e.g. for .cmd shims like npx/npm) — it also owns the escaping in that case.
+ *   Set true to force full shell interpretation instead; this bypasses cross-spawn's
+ *   escaping entirely and is rarely what you want for untrusted input.
  */
 
 /**
@@ -124,33 +125,26 @@ export function createStdioSupervisor({ logDir, onSpawn, onLine, onExit, shouldR
     clearTimeout(restartTimers.get(id))
     restartTimers.delete(id)
 
-    const useShell = process.platform === 'win32' && cfg.shell !== false
     const args = cfg.args ?? []
     const childEnv = buildChildEnv(cfg)
 
     let child
     try {
-      child = useShell
-        ? spawn([cfg.command, ...args].map(quoteWindowsArg).join(' '), {
-            env: childEnv,
-            windowsHide: true,
-            shell: true,
-            stdio: ['pipe', 'pipe', 'pipe'],
-          })
-        : spawn(cfg.command, args, {
-            env: childEnv,
-            windowsHide: true,
-            // POSIX only: make this child the leader of its own process
-            // group (child.pid becomes the pgid too), so killChild() can
-            // signal the whole group instead of just this one process. A
-            // wrapper like npx forks the real server as its own child —
-            // signaling only the wrapper's PID kills the wrapper and
-            // orphans the server underneath it. Left off on win32: process
-            // groups work differently there, and taskkill /T is used
-            // instead (see killChild).
-            detached: process.platform !== 'win32',
-            stdio: ['pipe', 'pipe', 'pipe'],
-          })
+      child = crossSpawn(cfg.command, args, {
+        env: childEnv,
+        cwd: cfg.cwd,
+        windowsHide: true,
+        shell: cfg.shell,
+        // POSIX only: make this child the leader of its own process group
+        // (child.pid becomes the pgid too), so killChild() can signal the
+        // whole group instead of just this one process. A wrapper like npx
+        // forks the real server as its own child — signaling only the
+        // wrapper's PID kills the wrapper and orphans the server underneath
+        // it. Left off on win32: process groups work differently there, and
+        // taskkill /T is used instead (see killChild).
+        detached: process.platform !== 'win32',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
     } catch (err) {
       return { ok: false, error: `Failed to spawn "${cfg.command}": ${err.message}` }
     }
