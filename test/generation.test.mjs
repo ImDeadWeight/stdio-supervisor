@@ -19,6 +19,18 @@ function spawnEcho(extraEnv = {}) {
   }
 }
 
+// See the note on the same helper in basic.test.mjs: spawn/crash timings are
+// not budgetable on a loaded CI runner, so poll for conditions that should
+// become true instead of sleeping a fixed guess.
+async function waitFor(cond, message, timeoutMs = 6000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (cond()) return
+    await delay(10)
+  }
+  assert.fail(`timed out after ${timeoutMs}ms waiting for: ${message}`)
+}
+
 test('onLine carries a generation that increments across restarts', async () => {
   const seen = []
   const supervisor = createStdioSupervisor({ onLine: (id, line, meta) => seen.push(meta.generation) })
@@ -65,8 +77,7 @@ test('a leaked pipe-holder stops being read once its parent exits', async () => 
 
     // Wrapper exits ~150ms, restart lands ~1s later; then watch the window
     // where the leaked writer and the new generation are both producing.
-    await delay(1400)
-    assert.equal(supervisor.isRunning('a'), true, 'restarted')
+    await waitFor(() => supervisor.isRunning('a') && supervisor.status('a').restarts === 1, 'restarted')
     const mark = seen.length
     await delay(800)
 
@@ -94,7 +105,7 @@ test('status() reports restart count and last exit code', async () => {
     assert.equal(supervisor.status('never-started'), null)
 
     supervisor.start('a', spawnEcho({ ECHO_CRASH_AFTER_MS: '50', ECHO_EXIT_CODE: '3' }))
-    await delay(150)
+    await waitFor(() => supervisor.status('a').lastExit !== null, 'crash recorded')
 
     const down = supervisor.status('a')
     assert.equal(down.running, false)
@@ -102,7 +113,7 @@ test('status() reports restart count and last exit code', async () => {
     assert.equal(down.lastExit.code, 3, 'exit code is visible to a health check')
     assert.equal(down.generation, 1)
 
-    await delay(1300)
+    await waitFor(() => supervisor.status('a').restarts === 1, 'restart recorded')
     const up = supervisor.status('a')
     assert.equal(up.running, true)
     assert.equal(up.restarts, 1)
@@ -128,7 +139,7 @@ test('shouldRestart receives counters, so a caller can cap retries', async () =>
   try {
     supervisor.start('a', spawnEcho({ ECHO_CRASH_AFTER_MS: '50' }))
     // Crash, +1s backoff, crash, +2s backoff, crash -> refused.
-    await delay(4500)
+    await waitFor(() => calls.length >= 3, 'three restart decisions', 12000)
 
     assert.ok(calls.length >= 3, `expected at least 3 restart decisions, got ${calls.length}`)
     assert.equal(calls[0].consecutiveRestarts, 0)
@@ -149,8 +160,7 @@ test('stop() clears flap state so a manual start begins at the floor delay', asy
   const supervisor = createStdioSupervisor({ resolveConfig: () => spawnEcho() })
   try {
     supervisor.start('a', spawnEcho({ ECHO_CRASH_AFTER_MS: '50' }))
-    await delay(1300)
-    assert.equal(supervisor.status('a').consecutiveRestarts, 1)
+    await waitFor(() => supervisor.status('a').consecutiveRestarts === 1, 'one crash-restart')
 
     supervisor.stop('a')
     await delay(300)
