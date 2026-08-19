@@ -6,9 +6,11 @@ spawning and babysitting a process from Node:
 
 - Restart on crash with capped exponential backoff (and a stability window
   that resets the backoff once a process has stayed up a while)
-- Cross-platform termination, including killing the whole process tree on
-  Windows (a plain `child.kill()` orphans the real process when it was
-  spawned through a shell)
+- Cross-platform termination that kills the whole process tree, not just the
+  direct child — via `taskkill /T` on Windows, and process-group signaling
+  (`detached` + `kill(-pid)`) on POSIX. A plain `child.kill()` only signals
+  the direct PID; a wrapper like `npx` that forks the real server as its own
+  child would leave that real server orphaned on either platform
 - Windows `.cmd` shim handling for `npx`/`npm`-style commands, with correct
   argv quoting
 - Line-framed stdout — partial chunks are buffered until a full line is
