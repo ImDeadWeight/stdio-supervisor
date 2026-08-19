@@ -58,6 +58,10 @@ function quoteWindowsArg(a) {
 /**
  * @param {object} opts
  * @param {string} [opts.logDir] Directory for per-process stderr logs. Omit to disable file logging.
+ * @param {(id: string, cfg: ProcessConfig) => void} [opts.onSpawn] Called once a process has actually been
+ *   spawned — on the initial start() and on every successful crash-restart. This is the signal that a
+ *   *new* process instance is live, for callers layering a per-connection protocol (an init handshake,
+ *   session setup) on top: whatever you do once after start(), do again here.
  * @param {(id: string, line: string) => void} [opts.onLine] Called with one framed line of stdout at a time.
  * @param {(id: string, info: {code?: number|null, signal?: string|null, error?: string}) => void} [opts.onExit]
  * @param {(id: string) => boolean} [opts.shouldRestart] Consulted before a crash-restart; defaults to always true.
@@ -82,7 +86,7 @@ function buildChildEnv(cfg) {
   return { ...base, ...(cfg.env ?? {}) }
 }
 
-export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, resolveConfig } = {}) {
+export function createStdioSupervisor({ logDir, onSpawn, onLine, onExit, shouldRestart, resolveConfig } = {}) {
   /**
    * @typedef {object} ManagedProcess
    * @property {import('node:child_process').ChildProcess} child
@@ -91,6 +95,7 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
    * @property {number} restartDelay current crash-restart backoff
    * @property {ReturnType<typeof setTimeout> | null} stableTimer
    * @property {boolean} stopping   true while a deliberate stop is in progress
+   * @property {ReturnType<typeof setTimeout> | null} replyTimer pending send()-timeout watchdog, if any
    */
   /** @type {Map<string, ManagedProcess>} */
   const running = new Map()
@@ -147,6 +152,7 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
       restartDelay: prev?.restartDelay ?? RESTART_INITIAL_MS,
       stableTimer: null,
       stopping: false,
+      replyTimer: null,
     }
     running.set(id, entry)
 
@@ -165,7 +171,17 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
       while ((nl = entry.stdoutBuf.indexOf('\n')) !== -1) {
         const line = entry.stdoutBuf.slice(0, nl).replace(/\r$/, '')
         entry.stdoutBuf = entry.stdoutBuf.slice(nl + 1)
-        if (line.trim()) onLine?.(id, line)
+        if (line.trim()) {
+          // Any output is treated as "the process is responsive" — there's no
+          // protocol awareness here to correlate a specific reply to a
+          // specific send(), so a pending reply watchdog clears on the next
+          // line, whichever one it is.
+          if (entry.replyTimer) {
+            clearTimeout(entry.replyTimer)
+            entry.replyTimer = null
+          }
+          onLine?.(id, line)
+        }
       }
     })
 
@@ -188,6 +204,7 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
       errLog?.write(`spawn error: ${err.message}\n`)
       errLog?.end()
       clearTimeout(entry.stableTimer)
+      clearTimeout(entry.replyTimer)
       if (running.get(id) === entry) running.delete(id)
       // No crash-restart here: a spawn error means the command itself is bad
       // (missing binary, bad path) — retrying would loop against the same
@@ -201,6 +218,7 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
       errLog?.write(`--- exited code=${code} signal=${signal} ---\n`)
       errLog?.end()
       clearTimeout(entry.stableTimer)
+      clearTimeout(entry.replyTimer)
       const wasStopping = entry.stopping
       if (running.get(id) === entry) running.delete(id)
       onExit?.(id, { code, signal })
@@ -229,6 +247,12 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
       }
     })
 
+    // Fired for both the initial start() and every successful crash-restart —
+    // callers with a per-connection handshake to redo (MCP's `initialize`,
+    // or any other protocol setup) key off this rather than guessing from
+    // onLine/onExit timing.
+    onSpawn?.(id, cfg)
+
     return { ok: true }
   }
 
@@ -255,13 +279,22 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
     if (!entry) return { ok: true, wasRunning: false }
     entry.stopping = true
     clearTimeout(entry.stableTimer)
+    clearTimeout(entry.replyTimer)
     try { entry.child.stdin.end() } catch { /* stream may be gone */ }
     killChild(entry.child)
     return { ok: true, wasRunning: true }
   }
 
-  /** @param {string} id @param {string} line One line of input, newline-free. */
-  function send(id, line) {
+  /**
+   * @param {string} id @param {string} line One line of input, newline-free.
+   * @param {object} [opts]
+   * @param {number} [opts.timeoutMs] If given, arms a watchdog: if no line of output arrives from this
+   *   process within timeoutMs, onTimeout is called. There's no request/reply correlation — any output
+   *   at all disarms it, so this is a "the process has gone quiet" signal, not a per-message reply
+   *   guarantee. A later send() with its own timeoutMs replaces the previously armed watchdog.
+   * @param {(id: string, info: {timeoutMs: number}) => void} [opts.onTimeout]
+   */
+  function send(id, line, { timeoutMs, onTimeout } = {}) {
     const entry = running.get(id)
     if (!entry) return { ok: false, error: `Process "${id}" is not running` }
     // One line per write by contract; strip embedded newlines so a malformed
@@ -270,6 +303,14 @@ export function createStdioSupervisor({ logDir, onLine, onExit, shouldRestart, r
       entry.child.stdin.write(String(line).replace(/\r?\n/g, ' ') + '\n')
     } catch (err) {
       return { ok: false, error: `Process "${id}" stdin write failed: ${err.message}` }
+    }
+    if (Number.isFinite(timeoutMs)) {
+      clearTimeout(entry.replyTimer)
+      entry.replyTimer = setTimeout(() => {
+        entry.replyTimer = null
+        onTimeout?.(id, { timeoutMs })
+      }, timeoutMs)
+      entry.replyTimer.unref?.()
     }
     return { ok: true }
   }

@@ -165,3 +165,121 @@ test('start() with a bad command returns ok:false instead of throwing', () => {
     supervisor.shutdown()
   }
 })
+
+test('onSpawn() fires on the initial start() with the config used', async () => {
+  const spawns = []
+  const supervisor = createStdioSupervisor({ onSpawn: (id, cfg) => spawns.push([id, cfg]) })
+  try {
+    const cfg = spawnEcho({ ECHO_PREFIX: 'x:' })
+    supervisor.start('a', cfg)
+    await delay(100)
+
+    assert.equal(spawns.length, 1)
+    assert.equal(spawns[0][0], 'a')
+    assert.equal(spawns[0][1], cfg)
+  } finally {
+    supervisor.shutdown()
+  }
+})
+
+test('onSpawn() fires again on a crash-restart, with the re-resolved config', async () => {
+  const spawns = []
+  const supervisor = createStdioSupervisor({
+    onSpawn: (id, cfg) => spawns.push([id, cfg]),
+    resolveConfig: () => spawnEcho({ ECHO_PREFIX: 'restarted:' }),
+  })
+  try {
+    supervisor.start('a', spawnEcho({ ECHO_PREFIX: 'original:', ECHO_CRASH_AFTER_MS: '50' }))
+    await delay(150)
+    assert.equal(spawns.length, 1, 'initial spawn observed')
+
+    await delay(1200) // backoff + restart
+    assert.equal(spawns.length, 2, 'restart spawn observed')
+    assert.equal(spawns[1][0], 'a')
+    assert.equal(spawns[1][1].env.ECHO_PREFIX, 'restarted:')
+  } finally {
+    supervisor.shutdown()
+  }
+})
+
+test('onSpawn() does not fire for a no-op start() on an already-running id', async () => {
+  const spawns = []
+  const supervisor = createStdioSupervisor({ onSpawn: (id) => spawns.push(id) })
+  try {
+    supervisor.start('a', spawnEcho())
+    await delay(100)
+    supervisor.start('a', spawnEcho())
+    await delay(50)
+
+    assert.equal(spawns.length, 1)
+  } finally {
+    supervisor.shutdown()
+  }
+})
+
+test('send() with timeoutMs calls onTimeout when nothing comes back in time', async () => {
+  const timeouts = []
+  const supervisor = createStdioSupervisor()
+  try {
+    // A process that never writes anything, so any reply watchdog we arm
+    // must fire — this fixture just sits there ignoring stdin.
+    supervisor.start('silent', {
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'],
+      shell: false,
+    })
+    await delay(100)
+
+    const res = supervisor.send('silent', 'ping', {
+      timeoutMs: 300,
+      onTimeout: (id, info) => timeouts.push([id, info]),
+    })
+    assert.equal(res.ok, true)
+
+    await delay(500)
+    assert.deepEqual(timeouts, [['silent', { timeoutMs: 300 }]])
+  } finally {
+    supervisor.shutdown()
+  }
+})
+
+test('send() with timeoutMs does not call onTimeout if a line arrives first', async () => {
+  const timeouts = []
+  const supervisor = createStdioSupervisor()
+  try {
+    supervisor.start('a', spawnEcho())
+    await delay(100)
+
+    supervisor.send('a', 'hello', {
+      timeoutMs: 2000,
+      onTimeout: (id, info) => timeouts.push([id, info]),
+    })
+    await delay(200) // echo-server replies well within the 2s timeout
+
+    assert.deepEqual(timeouts, [])
+  } finally {
+    supervisor.shutdown()
+  }
+})
+
+test('a later send() timeout replaces an earlier pending one, not stacks', async () => {
+  const timeouts = []
+  const supervisor = createStdioSupervisor()
+  try {
+    supervisor.start('silent', {
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'],
+      shell: false,
+    })
+    await delay(100)
+
+    supervisor.send('silent', 'first', { timeoutMs: 200, onTimeout: (id, info) => timeouts.push(['first', id, info]) })
+    supervisor.send('silent', 'second', { timeoutMs: 400, onTimeout: (id, info) => timeouts.push(['second', id, info]) })
+
+    await delay(700)
+    // Only the second watchdog should ever fire — arming a new one clears the prior pending timer.
+    assert.deepEqual(timeouts, [['second', 'silent', { timeoutMs: 400 }]])
+  } finally {
+    supervisor.shutdown()
+  }
+})

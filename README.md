@@ -18,6 +18,13 @@ spawning and babysitting a process from Node:
 - Config re-resolution on crash-restart, so a config edit made while a
   process is up takes effect on its next restart rather than requiring a
   manual stop/start
+- An `onSpawn` hook that fires on the initial start *and* every successful
+  crash-restart, so callers with a per-connection handshake (an MCP
+  `initialize`, or anything else that needs redoing against a fresh process)
+  have a clean signal for "this is a new instance"
+- An optional per-`send()` reply watchdog (`timeoutMs`/`onTimeout`) for
+  detecting a process that's gone quiet — no request/reply correlation, just
+  "nothing came back before the deadline"
 
 It does **not** know anything about your process's protocol — no RPC
 framing, no message correlation. It gives you framed lines in and lines out;
@@ -39,6 +46,7 @@ import { createStdioSupervisor } from 'stdio-supervisor'
 
 const supervisor = createStdioSupervisor({
   logDir: './logs', // optional; omit to disable stderr file logging
+  onSpawn: (id, cfg) => doHandshake(id), // fires on start() and every crash-restart
   onLine: (id, line) => console.log(`[${id}]`, line),
   onExit: (id, info) => console.log(`[${id}] exited`, info),
   shouldRestart: (id) => true, // consulted before every crash-restart
@@ -51,7 +59,10 @@ supervisor.start('github', {
   env: { GITHUB_PERSONAL_ACCESS_TOKEN: token },
 })
 
-supervisor.send('github', JSON.stringify({ jsonrpc: '2.0', method: 'ping', id: 1 }))
+supervisor.send('github', JSON.stringify({ jsonrpc: '2.0', method: 'ping', id: 1 }), {
+  timeoutMs: 5000,
+  onTimeout: (id) => console.warn(`[${id}] no output within 5s of that write`),
+})
 
 supervisor.isRunning('github')   // -> true
 supervisor.listRunning()         // -> ['github']
@@ -67,6 +78,7 @@ await supervisor.shutdown()      // stop everything, cancel all pending restarts
 | option | type | description |
 |---|---|---|
 | `logDir` | `string` | Directory for per-process stderr log files. Omit to disable file logging. |
+| `onSpawn` | `(id, cfg) => void` | Called once a process has actually been spawned — on the initial `start()` and on every successful crash-restart. `cfg` is the config that was actually used (the re-resolved one, on a restart). This is the hook for redoing a per-connection handshake against the new process instance. Not called for a no-op `start()` on an already-running id. |
 | `onLine` | `(id, line) => void` | Called once per framed line of stdout. |
 | `onExit` | `(id, info) => void` | Called on process exit or spawn error. `info` is `{ code, signal }` or `{ error }`. |
 | `shouldRestart` | `(id) => boolean` | Consulted before a crash-restart. Defaults to always `true`. Never consulted for a deliberate `stop()`. |
@@ -76,7 +88,7 @@ Returns a supervisor with:
 
 - **`start(id, config)`** — spawn a process under `id`. No-op (`{ ok: true, alreadyRunning: true }`) if `id` is already running. Returns `{ ok: false, error }` if the spawn itself throws synchronously.
 - **`stop(id)`** — deliberately stop a process. Cancels any pending crash-restart for `id` first. Returns `{ ok: true, wasRunning: boolean }`.
-- **`send(id, line)`** — write one line to the process's stdin. Returns `{ ok: false, error }` if `id` isn't running or the write fails.
+- **`send(id, line, opts?)`** — write one line to the process's stdin. Returns `{ ok: false, error }` if `id` isn't running or the write fails. `opts.timeoutMs`, if given, arms a watchdog that calls `opts.onTimeout(id, { timeoutMs })` if no line of output arrives before the deadline. There's no request/reply correlation — any output at all disarms it, and a later `send()` with its own `timeoutMs` replaces a still-pending watchdog rather than stacking.
 - **`isRunning(id)`** — `boolean`.
 - **`listRunning()`** — `string[]` of currently-running ids.
 - **`shutdown()`** — stop every running process and cancel every pending restart. Call this once, on your own process's exit, so nothing is left running after you quit.
