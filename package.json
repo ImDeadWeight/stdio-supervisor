@@ -31,6 +31,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/REPLACE_ME/stdio-supervisor.git"
+    "url": "git+https://github.com/ImDeadWeight/stdio-supervisor.git"
+  },
+  "author": "Patrick Carswell",
+  "homepage": "https://github.com/ImDeadWeight/stdio-supervisor#readme",
+  "bugs": {
+    "url": "https://github.com/ImDeadWeight/stdio-supervisor/issues"
   }
 }
