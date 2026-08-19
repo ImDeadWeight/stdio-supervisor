@@ -1,0 +1,36 @@
+{
+  "name": "stdio-supervisor",
+  "version": "0.1.0",
+  "description": "A small, dependency-free supervisor for long-lived child processes communicating over stdio: restart with capped backoff, cross-platform (incl. Windows process-tree) termination, and line-framed output.",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "stdio",
+    "child-process",
+    "process-supervisor",
+    "process-manager",
+    "restart",
+    "backoff",
+    "mcp",
+    "cross-platform"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REPLACE_ME/stdio-supervisor.git"
+  }
+}
