@@ -20,6 +20,20 @@ function spawnEcho(extraEnv = {}) {
   }
 }
 
+// Spawn-and-crash timings are not budgetable on a loaded CI runner: a fixed
+// `delay(150)` for "node has started and exited 50ms later" is a coin flip on
+// a slow macOS box. Poll for the condition instead, with a ceiling that is
+// generous rather than tight. Only use this where the condition is expected
+// to become true — proving something did NOT happen still needs a real wait.
+async function waitFor(cond, message, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (cond()) return
+    await delay(10)
+  }
+  assert.fail(`timed out after ${timeoutMs}ms waiting for: ${message}`)
+}
+
 test('start() spawns a process and delivers framed lines via onLine', async () => {
   const lines = []
   const supervisor = createStdioSupervisor({ onLine: (id, line) => lines.push([id, line]) })
@@ -91,12 +105,10 @@ test('a crashing process restarts on its own with backoff', async () => {
   })
   try {
     supervisor.start('a', spawnEcho({ ECHO_CRASH_AFTER_MS: '50' }))
-    await delay(150)
-    assert.equal(exits.length, 1, 'first crash observed')
+    await waitFor(() => exits.length === 1, 'first crash observed')
 
-    // Backoff starts at 1s, so give it a little more than that to come back up.
-    await delay(1200)
-    assert.equal(supervisor.isRunning('a'), true, 'restarted after backoff')
+    // Backoff starts at 1s, so it comes back up a little after that.
+    await waitFor(() => supervisor.isRunning('a'), 'restarted after backoff')
   } finally {
     supervisor.shutdown()
   }
@@ -111,9 +123,10 @@ test('shouldRestart(id) => false suppresses the crash-restart', async () => {
   })
   try {
     supervisor.start('a', spawnEcho({ ECHO_CRASH_AFTER_MS: '50' }))
-    await delay(150)
-    assert.equal(exits.length, 1, 'crash observed')
+    await waitFor(() => exits.length === 1, 'crash observed')
 
+    // A real wait, not a poll: the point is that no restart happens inside the
+    // backoff window, so the time has to actually pass.
     await delay(1200)
     assert.equal(supervisor.isRunning('a'), false, 'did not restart')
   } finally {
@@ -129,7 +142,8 @@ test('resolveConfig() is consulted on crash-restart so edited config takes effec
   })
   try {
     supervisor.start('a', spawnEcho({ ECHO_PREFIX: 'original:', ECHO_CRASH_AFTER_MS: '50' }))
-    await delay(1300) // crash + backoff + restart
+    // crash + backoff + restart
+    await waitFor(() => supervisor.status('a')?.restarts === 1 && supervisor.isRunning('a'), 'restarted once')
 
     supervisor.send('a', 'ping')
     await delay(200)
@@ -193,11 +207,9 @@ test('onSpawn() fires again on a crash-restart, with the re-resolved config', as
   })
   try {
     supervisor.start('a', spawnEcho({ ECHO_PREFIX: 'original:', ECHO_CRASH_AFTER_MS: '50' }))
-    await delay(150)
-    assert.equal(spawns.length, 1, 'initial spawn observed')
+    await waitFor(() => spawns.length === 1, 'initial spawn observed')
 
-    await delay(1200) // backoff + restart
-    assert.equal(spawns.length, 2, 'restart spawn observed')
+    await waitFor(() => spawns.length === 2, 'restart spawn observed') // backoff + restart
     assert.equal(spawns[1][0], 'a')
     assert.equal(spawns[1][1].env.ECHO_PREFIX, 'restarted:')
   } finally {
